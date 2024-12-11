@@ -1,5 +1,4 @@
 import argparse
-#import torch
 import jittor as jt
 from jittor import nn
 import json, os

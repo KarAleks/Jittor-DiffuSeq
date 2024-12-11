@@ -4,10 +4,10 @@ import argparse
 # import torch
 import jittor as jt
 
-# from torchmetrics.text.rouge import ROUGEScore
-# rougeScore = ROUGEScore()
+from torchmetrics.text.rouge import ROUGEScore
+rougeScore = ROUGEScore()
 from bert_score import score
-from rouge_score import rouge_scorer
+# from rouge_score import rouge_scorer
 
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import nltk
@@ -120,7 +120,7 @@ if __name__ == '__main__':
                 avg_len.append(len(recover.split(' ')))
                 bleu.append(get_bleu(recover, reference))
 
-                scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
+                scorer = rougeScore.RougeScorer(['rougeL'], use_stemmer=True)
                 score = scorer.score(recover, reference)
                 rougel.append(score['rougeL'].fmeasure)
                 #rougel.append(rougeScore(recover, reference)['rougeL_fmeasure'].tolist())

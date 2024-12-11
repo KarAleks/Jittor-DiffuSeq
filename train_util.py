@@ -14,7 +14,7 @@ from jittor.optim import AdamW
 
 import io
 
-from diffuseq.utils import dist_util, logger
+from diffuseq.utils import logger
 from diffuseq.utils.fp16_util import (
     make_master_params,
     master_params_to_model_params,
@@ -77,15 +77,15 @@ class TrainLoop:
         self.weight_decay = weight_decay
         self.learning_steps = learning_steps
         self.gradient_clipping = gradient_clipping
-
+        self.device = "cuda" if jt.has_cuda else "cpu"
+        self.use_ddp = False
         self.step = 0
         self.resume_step = 0
-        self.global_batch = self.batch_size * dist.get_world_size()
 
         self.model_params = list(self.model.parameters())
         self.master_params = self.model_params
         self.lg_loss_scale = INITIAL_LOG_LOSS_SCALE
-        self.sync_cuda = th.cuda.is_available()
+        self.sync_cuda = jt.has_cuda
 
         self.checkpoint_path = checkpoint_path # DEBUG **
 
@@ -109,24 +109,9 @@ class TrainLoop:
                 copy.deepcopy(self.master_params) for _ in range(len(self.ema_rate))
             ]
 
-        if th.cuda.is_available(): # DEBUG **
-            self.use_ddp = True
-            print(dist_util.dev())
-            self.ddp_model = DDP(
-                self.model,
-                device_ids=[dist_util.dev()],
-                output_device=dist_util.dev(),
-                broadcast_buffers=False,
-                bucket_cap_mb=128,
-                find_unused_parameters=False,
-            )
+        if jt.has_cuda: # DEBUG **
+            self.model.to('cuda')
         else:
-            if dist.get_world_size() > 1:
-                logger.warn(
-                    "Distributed training requires CUDA. "
-                    "Gradients will not be synchronized properly!"
-                )
-            self.use_ddp = False
             self.ddp_model = self.model
 
     def _load_and_sync_parameters(self):
@@ -134,15 +119,12 @@ class TrainLoop:
 
         if resume_checkpoint[-3:] == '.pt':
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
-            if dist.get_rank() == 0:
-                logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-                self.model.load_state_dict(
-                    dist_util.load_state_dict(
-                        actual_model_path(resume_checkpoint), map_location=dist_util.dev()
-                    )
+            logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
+            self.model.load_state_dict(
+                jt.load(
+                    actual_model_path(resume_checkpoint), map_location=self.device
                 )
-
-        dist_util.sync_params(self.model.parameters())
+            )
 
     def _load_ema_parameters(self, rate):
         ema_params = copy.deepcopy(self.master_params)
@@ -150,22 +132,19 @@ class TrainLoop:
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
         ema_checkpoint = find_ema_checkpoint(main_checkpoint, self.resume_step, rate)
         if ema_checkpoint:
-            if dist.get_rank() == 0:
-                logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
-                state_dict = dist_util.load_state_dict(
-                    actual_model_path(ema_checkpoint), map_location=dist_util.dev()
-                )
-                ema_params = self._state_dict_to_master_params(state_dict)
-
-        dist_util.sync_params(ema_params)
+            logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
+            state_dict = jt.load(
+                actual_model_path(ema_checkpoint), map_location=self.device
+            )
+            ema_params = self._state_dict_to_master_params(state_dict)
         return ema_params
 
     def _load_optimizer_state(self):
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
         if bf.exists(main_checkpoint):
             logger.log(f"loading optimizer state from checkpoint: {main_checkpoint}")
-            state_dict = dist_util.load_state_dict(
-                actual_model_path(main_checkpoint), map_location=dist_util.dev()
+            state_dict = jt.load(
+                actual_model_path(main_checkpoint), map_location=self.device
             )
             self.opt.load_state_dict(state_dict)
 
@@ -206,16 +185,16 @@ class TrainLoop:
         self.log_step()
 
     def forward_only(self, batch, cond):
-        with th.no_grad():
+        with jt.no_grad():
             zero_grad(self.model_params)
             for i in range(0, batch.shape[0], self.microbatch):
-                micro = batch[i: i + self.microbatch].to(dist_util.dev())
+                micro = batch[i: i + self.microbatch].to(self.device)
                 micro_cond = {
-                    k: v[i: i + self.microbatch].to(dist_util.dev())
+                    k: v[i: i + self.microbatch].to(self.device)
                     for k, v in cond.items()
                 }
                 last_batch = (i + self.microbatch) >= batch.shape[0]
-                t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
+                t, weights = self.schedule_sampler.sample(micro.shape[0], self.device)
                 # print(micro_cond.keys())
                 compute_losses = functools.partial(
                     self.diffusion.training_losses,
@@ -239,13 +218,13 @@ class TrainLoop:
     def forward_backward(self, batch, cond):
         zero_grad(self.model_params)
         for i in range(0, batch.shape[0], self.microbatch):
-            micro = batch[i : i + self.microbatch].to(dist_util.dev())
+            micro = batch[i : i + self.microbatch].to(self.device)
             micro_cond = {
-                k: v[i : i + self.microbatch].to(dist_util.dev())
+                k: v[i : i + self.microbatch].to(self.device)
                 for k, v in cond.items()
             }
             last_batch = (i + self.microbatch) >= batch.shape[0]
-            t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
+            t, weights = self.schedule_sampler.sample(micro.shape[0], self.device)
             # print(micro_cond.keys())
             compute_losses = functools.partial(
                 self.diffusion.training_losses,
@@ -261,10 +240,10 @@ class TrainLoop:
                 with self.ddp_model.no_sync():
                     losses = compute_losses()
 
-            if isinstance(self.schedule_sampler, LossAwareSampler):
-                self.schedule_sampler.update_with_local_losses(
-                    t, losses["loss"].detach()
-                )
+            # if isinstance(self.schedule_sampler, LossAwareSampler):
+            #     self.schedule_sampler.update_with_local_losses(
+            #         t, losses["loss"].detach()
+            #     )
 
             loss = (losses["loss"] * weights).mean()
             log_loss_dict(
@@ -277,7 +256,7 @@ class TrainLoop:
                 loss.backward()
 
     def optimize_fp16(self):
-        if any(not th.isfinite(p.grad).all() for p in self.model_params):
+        if any(not jt.isfinite(p.grad).all() for p in self.model_params):
             self.lg_loss_scale -= 1
             logger.log(f"Found NaN, decreased lg_loss_scale to {self.lg_loss_scale}")
             return
@@ -305,7 +284,7 @@ class TrainLoop:
         #     self.model.clip_grad_norm_(args.max_grad_norm)
         else:
             # Revert to normal clipping otherwise, handling Apex or full precision
-            th.nn.utils.clip_grad_norm_(
+            jt.nn.utils.clip_grad_norm_(
                 self.model.parameters(), #amp.master_params(self.opt) if self.use_apex else
                 max_grad_norm,
             )
@@ -347,25 +326,24 @@ class TrainLoop:
     def save(self):
         def save_checkpoint(rate, params):
             state_dict = self._master_params_to_state_dict(params)
-            if dist.get_rank() == 0:
-                logger.log(f"saving model {rate}...")
-                if not rate:
-                    filename = f"model{(self.step+self.resume_step):06d}.pt"
-                else:
-                    filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
-                print('writing to', bf.join(get_blob_logdir(), filename))
-                print('writing to', bf.join(self.checkpoint_path, filename))
-                # with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
-                #     th.save(state_dict, f)
-                with bf.BlobFile(bf.join(self.checkpoint_path, filename), "wb") as f: # DEBUG **
-                    th.save(state_dict, f) # save locally
+            logger.log(f"saving model {rate}...")
+            if not rate:
+                filename = f"model{(self.step+self.resume_step):06d}.pt"
+            else:
+                filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
+            print('writing to', bf.join(get_blob_logdir(), filename))
+            print('writing to', bf.join(self.checkpoint_path, filename))
+            # with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+            #     th.save(state_dict, f)
+            with bf.BlobFile(bf.join(self.checkpoint_path, filename), "wb") as f: # DEBUG **
+                jt.save(state_dict, f) # save locally
                     # pass # save empty
 
         # save_checkpoint(0, self.master_params)
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
 
-        dist.barrier()
+
 
     def _master_params_to_state_dict(self, master_params):
         if self.use_fp16:

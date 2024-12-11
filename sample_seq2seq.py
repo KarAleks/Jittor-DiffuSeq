@@ -19,7 +19,7 @@ from diffuseq.text_datasets import load_data_text
 # from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
 import time
-from diffuseq.utils import dist_util, logger
+from diffuseq.utils import logger,dist_util
 from functools import partial
 from basic_utils import (
     load_defaults_config,
@@ -42,12 +42,10 @@ def create_argparser():
 @jt.no_grad()
 def main():
     args = create_argparser().parse_args()
-
-    dist_util.setup_dist()
     logger.configure()
 
-    world_size = dist.get_world_size() or 1
-    rank = dist.get_rank() or 0
+    # world_size = dist.get_world_size() or 1
+    rank = 0
 
     # load configurations.
     config_path = os.path.join(os.path.split(args.model_path)[0], "training_args.json")
@@ -70,7 +68,7 @@ def main():
     pytorch_total_params = sum(p.numel() for p in model.parameters())
     logger.log(f'### The parameter count is {pytorch_total_params}')
 
-    model.eval().requires_grad_(False).to(dist_util.dev())
+    model.eval().requires_grad_(False).to("cuda" if jt.has_cuda else "cpu")
 
     tokenizer = load_tokenizer(args)
     model_emb = nn.Embedding(
@@ -96,10 +94,6 @@ def main():
     )
 
     start_t = time.time()
-
-    # batch, cond = next(data_valid)
-    # print(batch.shape)
-
     model_base_name = os.path.basename(os.path.split(args.model_path)[0]) + f'.{os.path.split(args.model_path)[1]}'
     out_dir = os.path.join(args.out_dir, f"{model_base_name.split('.ema')[0]}")
     if not os.path.isdir(out_dir):
@@ -119,17 +113,16 @@ def main():
         while True:
             batch, cond = next(data_valid)
             # print(batch.shape)
-            if idx % world_size == rank:  # Split data per nodes
-                all_test_data.append(cond)
-            idx += 1
-
+            # if idx % world_size == rank:  # Split data per nodes/
+            all_test_data.append(cond)
+            # idx += 1
     except StopIteration:
         print('### End of reading iteration...')
 
-    model_emb.to(dist_util.dev())
+    model_emb.to()
 
-    if idx % world_size and rank >= idx % world_size:
-        all_test_data.append({})  # Dummy data for Remainder : for dist.barrier()
+    # if idx % world_size and rank >= idx % world_size:
+    #     all_test_data.append({})  # Dummy data for Remainder : for dist.barrier()
 
     if rank == 0:
         from tqdm import tqdm
@@ -138,19 +131,13 @@ def main():
         iterator = iter(all_test_data)
 
     for cond in iterator:
-
-        if not cond:  # Barrier for Remainder
-            for i in range(world_size):
-                dist_util.barrier()
-            continue
-
-        input_ids_x = jt.array(cond.pop('input_ids')).to(dist_util.dev())
+        input_ids_x = jt.array(cond.pop('input_ids')).to("cuda" if jt.has_cuda else "cpu")
         x_start = model.get_embeds(input_ids_x)
         input_ids_mask = jt.array(cond.pop('input_mask'))
         input_ids_mask_ori = input_ids_mask
 
         noise = jt.randn_like(x_start)
-        input_ids_mask = jt.broadcast_to(input_ids_mask.unsqueeze(dim=-1), x_start.shape).to(dist_util.dev())
+        input_ids_mask = jt.broadcast_to(input_ids_mask.unsqueeze(dim=-1), x_start.shape).to("cuda" if jt.has_cuda else "cpu")
         x_noised = jt.where(input_ids_mask == 0, x_start, noise)
 
         model_kwargs = {}
@@ -210,13 +197,12 @@ def main():
             word_lst_source.append(tokenizer.decode_token(seq[:len_x]))
             word_lst_ref.append(tokenizer.decode_token(seq[len_x:]))
 
-        for i in range(world_size):
-            if i == rank:  # Write files sequentially
-                fout = open(out_path, 'a')
-                for (recov, ref, src) in zip(word_lst_recover, word_lst_ref, word_lst_source):
-                    print(json.dumps({"recover": recov, "reference": ref, "source": src}), file=fout)
-                fout.close()
-            dist.barrier()
+        # for i in range(world_size):
+            # if i == rank:  # Write files sequentially
+        fout = open(out_path, 'a')
+        for (recov, ref, src) in zip(word_lst_recover, word_lst_ref, word_lst_source):
+            print(json.dumps({"recover": recov, "reference": ref, "source": src}), file=fout)
+        fout.close()
 
     print('### Total takes {:.2f}s .....'.format(time.time() - start_t))
     print(f'### Written the decoded output to {out_path}')

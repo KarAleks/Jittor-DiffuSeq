@@ -1,14 +1,10 @@
 from transformers import AutoConfig
-# from transformers import BertEncoder
 from transformers.models.bert.modeling_bert import BertEncoder, BertModel
 
 import numpy as np
 import jittor as jt
 import jittor.nn as nn
 from jittor import Module
-# import torch as th
-# import torch.nn as nn
-# import torch.nn.functional as F
 
 from .utils.nn import timestep_embedding
 
@@ -82,7 +78,7 @@ class TransformerNetModel(Module):
             # self.word_embedding.weight.requires_grad = False
             
             self.input_transformers = temp_bert.encoder
-            self.buffer("position_ids", jt.arange(config.max_position_embeddings).expand((1, -1)))
+            self.buffer("   ", jt.arange(config.max_position_embeddings).expand((1, -1)))
             self.position_embeddings = temp_bert.embeddings.position_embeddings
             self.LayerNorm = temp_bert.embeddings.LayerNorm
 

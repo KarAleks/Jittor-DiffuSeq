@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
 
 import numpy as np
+import jittor as jt
+
 import torch as th
-# from jittor import distributed as dist
 import torch.distributed as dist
 
 
@@ -55,9 +56,9 @@ class ScheduleSampler(ABC):
         w = self.weights()
         p = w / np.sum(w)
         indices_np = np.random.choice(len(p), size=(batch_size,), p=p)
-        indices = th.from_numpy(indices_np).long().to(device)
+        indices = jt.from_numpy(indices_np).long().to(device)
         weights_np = 1 / (len(p) * p[indices_np])
-        weights = th.from_numpy(weights_np).float().to(device)
+        weights = jt.from_numpy(weights_np).float().to(device)
         return indices, weights
 
 
@@ -144,7 +145,7 @@ class LossSecondMomentResampler(LossAwareSampler):
         self._loss_history = np.zeros(
             [diffusion.num_timesteps, history_per_term], dtype=np.float64
         )
-        self._loss_counts = np.zeros([diffusion.num_timesteps], dtype=np.int)
+        self._loss_counts = np.zeros([diffusion.num_timesteps], dtype=np.int64)
 
     def weights(self):
         if not self._warmed_up():

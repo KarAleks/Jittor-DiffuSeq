@@ -3,8 +3,7 @@ Train a diffusion model on images.
 """
 
 import argparse
-import json, torch, os
-import numpy as np
+import json,os
 from diffuseq.utils import dist_util, logger
 from diffuseq.text_datasets import load_data_text
 from diffuseq.step_sample import create_named_schedule_sampler
@@ -19,10 +18,10 @@ from basic_utils import (
 from train_util import TrainLoop
 from transformers import set_seed
 import wandb
+import jittor as jt
 
 ### custom your wandb setting here ###
 # os.environ["WANDB_API_KEY"] = ""
-os.environ["WANDB_MODE"] = "offline"
 
 def create_argparser():
     defaults = dict()
@@ -68,12 +67,12 @@ def main():
         **args_to_dict(args, load_defaults_config().keys())
     )
     # print('#'*30, 'cuda', dist_util.dev())
-    model.to(dist_util.dev()) #  DEBUG **
+    model.cuda() if jt.has_cuda else model
     # model.cuda() #  DEBUG **
 
-    pytorch_total_params = sum(p.numel() for p in model.parameters())
+    total_params = sum(p.numel() for p in model.parameters())
 
-    logger.log(f'### The parameter count is {pytorch_total_params}')
+    logger.log(f'### The parameter count is {total_params}')
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log(f'### Saving the hyperparameters to {args.checkpoint_path}/training_args.json')
