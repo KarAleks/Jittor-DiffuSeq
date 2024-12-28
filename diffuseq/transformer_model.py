@@ -1,13 +1,11 @@
 from transformers import AutoConfig
-from transformers.models.bert.modeling_bert import BertEncoder, BertModel
-
 import numpy as np
 import jittor as jt
 import jittor.nn as nn
-from jittor import Module
-
+from jittor.nn import Module
 from .utils.nn import timestep_embedding
-
+from .utils.bert import BertEncoder
+ 
 class SiLU(Module):
     def execute(self, x):
         return nn.silu(x)
@@ -38,7 +36,6 @@ class TransformerNetModel(Module):
         logits_mode=1,
     ):
         super().__init__()
-
         if config is None:
             config = AutoConfig.from_pretrained(config_name)
             config.hidden_dropout_prob = dropout
@@ -66,29 +63,11 @@ class TransformerNetModel(Module):
             self.input_up_proj = nn.Sequential(nn.Linear(input_dims, config.hidden_size),
                                               nn.Tanh(), nn.Linear(config.hidden_size, config.hidden_size))
         
-        if init_pretrained == 'bert':
-            print('initializing from pretrained bert...')
-            print(config)
-            temp_bert = BertModel.from_pretrained(config_name, config=config)
-
-            self.word_embedding = temp_bert.embeddings.word_embeddings
-            with jt.no_grad():
-                self.lm_head.weight = self.word_embedding.weight
-            # self.lm_head.weight.requires_grad = False
-            # self.word_embedding.weight.requires_grad = False
-            
-            self.input_transformers = temp_bert.encoder
-            self.buffer("   ", jt.arange(config.max_position_embeddings).expand((1, -1)))
-            self.position_embeddings = temp_bert.embeddings.position_embeddings
-            self.LayerNorm = temp_bert.embeddings.LayerNorm
-
-            del temp_bert.embeddings
-            del temp_bert.pooler
-
-        elif init_pretrained == 'no':
+        if init_pretrained == 'no':
             self.input_transformers = BertEncoder(config)
+            print("ahcbdshd: ",config.max_position_embeddings)
 
-            self.buffer("position_ids", jt.arange(config.max_position_embeddings).expand((1, -1)))
+            self.register_buffer("position_ids", jt.arange(config.max_position_embeddings).expand((1, -1)))
             self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
             self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         
@@ -112,7 +91,7 @@ class TransformerNetModel(Module):
             emb_norm = (self.lm_head.weight ** 2).sum(-1).view(-1, 1)  # vocab
             text_emb_t = jt.transpose(text_emb.view(-1, text_emb.size(-1)), 0, 1)  # d, bsz*seqlen
             arr_norm = (text_emb ** 2).sum(-1).view(-1, 1)  # bsz*seqlen, 1
-            dist = emb_norm + arr_norm.transpose(0, 1) - 2.0 * jt.mm(self.lm_head.weight,
+            dist = emb_norm + arr_norm.transpose(0, 1) - 2.0 * jt.matmul(self.lm_head.weight,
                                                                      text_emb_t)  # (vocab, d) x (d, bsz*seqlen)
             scores = jt.sqrt(jt.clamp(dist, 0.0, np.inf)).view(emb_norm.size(0), hidden_repr.size(0),
                                                                hidden_repr.size(1)) # vocab, bsz*seqlen
@@ -136,15 +115,11 @@ class TransformerNetModel(Module):
             emb_x = self.input_up_proj(x)
         else:
             emb_x = x
-
         seq_length = x.size(1)
         position_ids = self.position_ids[:, : seq_length ]
-        # print(emb_x.shape, emb_t.shape, self.position_embeddings)
         emb_inputs = self.position_embeddings(position_ids) + emb_x + emb_t.unsqueeze(1).expand(-1, seq_length, -1)
         emb_inputs = self.dropout(self.LayerNorm(emb_inputs))
-
-        input_trans_hidden_states = self.input_transformers(emb_inputs).last_hidden_state
-        
+        input_trans_hidden_states = self.input_transformers(emb_inputs)["last_hidden_state"] 
         if self.output_dims != self.hidden_size:
             h = self.output_down_proj(input_trans_hidden_states)
         else:

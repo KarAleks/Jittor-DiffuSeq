@@ -8,7 +8,6 @@ import os, json
 from tracemalloc import start
 
 import numpy as np
-#import torch as th
 import jittor as jt
 from jittor import nn
 import torch.distributed as dist
@@ -19,7 +18,7 @@ from diffuseq.text_datasets import load_data_text
 # from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
 import time
-from diffuseq.utils import logger,dist_util
+from diffuseq.utils import logger
 from functools import partial
 from basic_utils import (
     load_defaults_config,
@@ -28,6 +27,7 @@ from basic_utils import (
     args_to_dict,
     load_tokenizer
 )
+
 
 def create_argparser():
     defaults = dict(model_path='', step=0, out_dir='', top_p=0)
@@ -61,22 +61,21 @@ def main():
         **args_to_dict(args, load_defaults_config().keys())
     )
 
-    model.load_state_dict(
-        dist_util.load_state_dict(args.model_path, map_location="cpu")
-    )
+    model.load_state_dict(jt.load(args.model_path))
 
     pytorch_total_params = sum(p.numel() for p in model.parameters())
     logger.log(f'### The parameter count is {pytorch_total_params}')
 
-    model.eval().requires_grad_(False).to("cuda" if jt.has_cuda else "cpu")
+    model.eval().requires_grad_(False)
 
     tokenizer = load_tokenizer(args)
     model_emb = nn.Embedding(
         num_embeddings=tokenizer.vocab_size, 
         embedding_dim=args.hidden_dim
-    ).stop_grad()
+    )
     model_emb.weight.assign(model.word_embedding.weight.clone().numpy())
-
+    model_emb.eval().requires_grad_(False)
+    jt.save(model_emb.state_dict(),"scjdbhc")
     jt.set_seed(args.seed2)
 
     print("### Sampling...on", args.split)
@@ -89,10 +88,10 @@ def main():
         data_args=args,
         split=args.split,
         loaded_vocab=tokenizer,
-        model_emb=model_emb.cpu(),  # using the same embedding wight with tranining data
+        model_emb=model_emb,  # using the same embedding wight with tranining data
         loop=False
     )
-
+    jt.flags.use_cuda = 1
     start_t = time.time()
     model_base_name = os.path.basename(os.path.split(args.model_path)[0]) + f'.{os.path.split(args.model_path)[1]}'
     out_dir = os.path.join(args.out_dir, f"{model_base_name.split('.ema')[0]}")
@@ -104,13 +103,14 @@ def main():
         os.mkdir(out_path)
     out_path = os.path.join(out_path, f"seed{args.seed2}_step{args.clamp_step}.json")
     # fout = open(out_path, 'a')
-
+    print("Clamp step: ",args.clamp_step)
     all_test_data = []
 
     idx = 0
 
     try:
-        while True:
+        while  True:
+            # print("akcbsdh")
             batch, cond = next(data_valid)
             # print(batch.shape)
             # if idx % world_size == rank:  # Split data per nodes/
@@ -119,7 +119,7 @@ def main():
     except StopIteration:
         print('### End of reading iteration...')
 
-    model_emb.to()
+    # model_emb.to()
 
     # if idx % world_size and rank >= idx % world_size:
     #     all_test_data.append({})  # Dummy data for Remainder : for dist.barrier()
@@ -131,18 +131,21 @@ def main():
         iterator = iter(all_test_data)
 
     for cond in iterator:
-        input_ids_x = jt.array(cond.pop('input_ids')).to("cuda" if jt.has_cuda else "cpu")
-        x_start = model.get_embeds(input_ids_x)
-        input_ids_mask = jt.array(cond.pop('input_mask'))
-        input_ids_mask_ori = input_ids_mask
+        # print("jvblsvb12")
 
+        input_ids_x = jt.array(cond.pop('input_ids')).to(np.int32)
+        x_start = model.get_embeds(input_ids_x)
+        input_ids_mask = jt.array(cond.pop('input_mask')).to(np.int32)
+        input_ids_mask_ori = input_ids_mask
+        # print(input_ids_mask)
         noise = jt.randn_like(x_start)
-        input_ids_mask = jt.broadcast_to(input_ids_mask.unsqueeze(dim=-1), x_start.shape).to("cuda" if jt.has_cuda else "cpu")
+        input_ids_mask = jt.broadcast(input_ids_mask.unsqueeze(dim=-1), x_start.shape)
         x_noised = jt.where(input_ids_mask == 0, x_start, noise)
 
         model_kwargs = {}
-
+        
         if args.step == args.diffusion_steps:
+            # print("es a chishty")
             args.use_ddim = False
             step_gap = 1
         else:
@@ -152,9 +155,12 @@ def main():
         sample_fn = (
             diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
         )
-
+        # for input_mask in input_ids_mask_ori:
+        #     # input_mask = input_mask.to(np.int32)
+        #     print(sum(input_mask),input_mask.sum())
+        #     len_x = args.seq_len - sum(input_mask).tolist()
         sample_shape = (x_start.shape[0], args.seq_len, args.hidden_dim)
-
+        # print("shdvsfvbfvjkhs")
         samples = sample_fn(
             model,
             sample_shape,
@@ -169,7 +175,7 @@ def main():
             x_start=x_start,
             gap=step_gap
         )
-
+        
         # print(samples[0].shape) # samples for each step
 
         sample = samples[-1]
@@ -178,22 +184,25 @@ def main():
         # print(sample.shape)
 
         logits = model.get_logits(sample)  # bsz, seqlen, vocab
-        cands = jt.argmax(logits, dim=-1)
+        cands = jt.topk(logits, k=1, dim=-1)
 
         word_lst_recover = []
         word_lst_ref = []
         word_lst_source = []
 
         # tokenizer = load_tokenizer(args)
-
-        for seq, input_mask in zip(cands, input_ids_mask_ori):
-            len_x = args.seq_len - input_mask.sum().item()
+        input_ids_mask_ori = input_ids_mask_ori.to(np.int32)
+        for seq, input_mask in zip(cands[1], input_ids_mask_ori):
+            # input_mask = input_mask.to(np.int32)
+            len_x = args.seq_len - sum(input_mask).item()
+            # print(len_x)
+            # print(len(seq[len_x:].view(-1).tolist()))
             tokens = tokenizer.decode_token(seq[len_x:])
             word_lst_recover.append(tokens)
 
         for seq, input_mask in zip(input_ids_x, input_ids_mask_ori):
             # tokens = tokenizer.decode_token(seq)
-            len_x = args.seq_len - input_mask.sum().item()
+            len_x = args.seq_len - sum(input_mask).item()
             word_lst_source.append(tokenizer.decode_token(seq[:len_x]))
             word_lst_ref.append(tokenizer.decode_token(seq[len_x:]))
 
@@ -203,6 +212,7 @@ def main():
         for (recov, ref, src) in zip(word_lst_recover, word_lst_ref, word_lst_source):
             print(json.dumps({"recover": recov, "reference": ref, "source": src}), file=fout)
         fout.close()
+        
 
     print('### Total takes {:.2f}s .....'.format(time.time() - start_t))
     print(f'### Written the decoded output to {out_path}')

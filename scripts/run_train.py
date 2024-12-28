@@ -42,9 +42,8 @@ if __name__ == '__main__':
 
     folder_name = "diffusion_models/"
 
-    if int(os.environ['LOCAL_RANK']) == 0:
-        if not os.path.isdir(folder_name):
-            os.mkdir(folder_name)
+    if not os.path.isdir(folder_name):
+        os.mkdir(folder_name)
 
     Model_FILE = f"diffuseq_{args.dataset}_h{args.hidden_dim}_lr{args.lr}" \
                 f"_t{args.diff_steps}_{args.noise_schedule}_{args.schedule_sampler}" \
@@ -53,14 +52,13 @@ if __name__ == '__main__':
         args.notes += time.strftime("%Y%m%d-%H:%M:%S")
         Model_FILE = Model_FILE + f'_{args.notes}'
     Model_FILE = os.path.join(folder_name, Model_FILE)
-
-    if int(os.environ['LOCAL_RANK']) == 0:
-        if not os.path.isdir(Model_FILE):
-            os.mkdir(Model_FILE)
+    # Model_FILE = "/home/aiuser/Jittor-DiffuSeq/diffusion_models/diffuseq_dialogue_h128_lr0.0001_t2000_sqrt_lossaware_seed102_test-qqp20241219-18:09:09"
+    if not os.path.isdir(Model_FILE):
+        os.mkdir(Model_FILE)
 
     COMMANDLINE = f" OPENAI_LOGDIR={Model_FILE}  " \
                   f"TOKENIZERS_PARALLELISM=false " \
-                  f"python train.py   " \
+                  f"python3 train.py   " \
                   f"--checkpoint_path {Model_FILE} " \
                   f"--dataset {args.dataset} --data_dir {args.data_dir} --vocab {args.vocab} --use_plm_init {args.use_plm_init} " \
                   f"--lr {args.lr} " \
@@ -75,9 +73,8 @@ if __name__ == '__main__':
 
     COMMANDLINE += " " + args.app
 
-    if int(os.environ['LOCAL_RANK']) == 0:
-        with open(os.path.join(Model_FILE, 'saved_bash.sh'), 'w') as f:
-            print(COMMANDLINE, file=f)
+    with open(os.path.join(Model_FILE, 'saved_bash.sh'), 'w') as f:
+        print(COMMANDLINE, file=f)
 
     print(COMMANDLINE)
     os.system(COMMANDLINE)

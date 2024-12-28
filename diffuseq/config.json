@@ -18,7 +18,7 @@
     "config_name": "/home/aiuser/DiffuSeq/bert-base-uncased/",
     "notes": "Notes",
     "data_dir": "experimanets",
-    "dataset": "CommonsenseConversation",
+    "dataset": "QuestionGen",
     "checkpoint_path": "checkpoint-path",
     "seq_len": 128,
     "hidden_t_dim": 128,

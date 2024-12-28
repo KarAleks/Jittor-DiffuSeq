@@ -3,7 +3,7 @@ import numpy as np
 
 def get_knn(model_emb, text_emb, dist='cos'):
     if dist == 'cos':
-        adjacency = model_emb @ text_emb.transpose(1, 0).to(model_emb.device)
+        adjacency = model_emb @ text_emb.transpose(1, 0)
     elif dist == 'l2':
         adjacency = model_emb.unsqueeze(1).expand(-1, text_emb.size(0), -1) - text_emb.unsqueeze(0).expand(
             model_emb.size(0), -1, -1)
@@ -16,7 +16,7 @@ def get_efficient_knn(model_emb, text_emb):
     text_emb_t = jt.transpose(text_emb.view(-1, text_emb.size(-1)), 0, 1) # d, bsz*seqlen
     arr_norm = (text_emb ** 2).sum(-1).view(-1, 1) # bsz*seqlen, 1
     # print(emb_norm.shape, arr_norm.shape)
-    dist = emb_norm + arr_norm.transpose(0, 1) - 2.0 * jt.mm(model_emb, text_emb_t) # (vocab, d) x (d, bsz*seqlen)
+    dist = emb_norm + arr_norm.transpose(0, 1) - 2.0 * jt.matmul(model_emb, text_emb_t) # (vocab, d) x (d, bsz*seqlen)
     dist = jt.clamp(dist, 0.0, np.inf)
     # print(dist.shape)
     topk_out = jt.topk(-dist, k=1, dim=0)
@@ -38,7 +38,7 @@ def rounding_func(text_emb_lst, model, tokenizer, emb_scale_factor=1.0):
         else:
             text_emb = text_emb
         val, indices = get_knn((down_proj_emb2 if dist == 'cos' else model_emb),
-                                text_emb.to(model_emb.device), dist=dist)
+                                text_emb, dist=dist)
     
         decoded_out_lst.append(tokenizer.decode_token(indices[0]))
 
@@ -69,9 +69,9 @@ def get_weights(model, args):
         input_embs = model.transformer.wte  # input_embs
         down_proj = model.down_proj
         model_emb = down_proj(input_embs.weight)
-        print(model_emb.shape)
+        #print(model_emb.shape)
         model = jt.nn.Embedding(model_emb.size(0), model_emb.size(1))
-        print(args.emb_scale_factor)
+        #print(args.emb_scale_factor)
         model.weight.data = model_emb * args.emb_scale_factor
 
     elif hasattr(model, 'weight'):
@@ -87,16 +87,16 @@ def denoised_fn_round(args, model, text_emb, t):
     model_emb = model.weight  # input_embs
     # print(t)
     old_shape = text_emb.shape
-    old_device = text_emb.device
+    # old_device = text_emb.device
 
     if len(text_emb.shape) > 2:
         text_emb = text_emb.reshape(-1, text_emb.size(-1))
     else:
         text_emb = text_emb
     # val, indices = get_knn(model_emb, text_emb.to(model_emb.device), dist=dist)
-    val, indices = get_efficient_knn(model_emb, text_emb.to(model_emb.device))
+    val, indices = get_efficient_knn(model_emb, text_emb)
     rounded_tokens = indices[0]
     # print(rounded_tokens.shape)
-    new_embeds = model(rounded_tokens).view(old_shape).to(old_device)
+    new_embeds = model(rounded_tokens).view(old_shape)
 
     return new_embeds

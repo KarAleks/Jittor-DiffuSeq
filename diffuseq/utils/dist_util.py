@@ -66,8 +66,8 @@ def load_state_dict(path, **kwargs):
     """
     # if int(os.environ['LOCAL_RANK']) == 0:
     with bf.BlobFile(path, "rb") as f:
-        data = f.read()
-    return jt.load(io.BytesIO(data), **kwargs)
+        # data = f.read()
+        return jt.load(f.name)
 
 
 def sync_params(params):

@@ -1,7 +1,7 @@
 # import blobfile as bf
 import numpy as np
 import jittor as jt
-from jittor.dataset import DataLoader, Dataset, DistributedSampler
+from jittor.dataset import DataLoader, Dataset
 # import torch
 import json
 import psutil
@@ -17,6 +17,7 @@ def load_data_text(
     split='train', 
     loaded_vocab=None,
     loop=True,
+    demo_text=""
 ):
     """
     For a dataset, create a generator over (seqs, kwargs) pairs.
@@ -36,7 +37,7 @@ def load_data_text(
 
     print('#'*30, '\nLoading text data...')
 
-    training_data = get_corpus(data_args, seq_len, split=split, loaded_vocab=loaded_vocab)
+    training_data = get_corpus(data_args, seq_len, split=split,demo_text=demo_text, loaded_vocab=loaded_vocab)
 
     dataset = TextDataset(
         training_data,
@@ -44,26 +45,27 @@ def load_data_text(
         model_emb=model_emb
     )
 
-    if split != 'test':
-        sampler = DistributedSampler(dataset)
-        data_loader = DataLoader(
-            dataset,
-            batch_size=batch_size,  # 20,
-            # drop_last=True,
-            sampler=sampler,
-            # shuffle=not deterministic,
-            num_workers=4,
-        )
-    else:
-        data_loader = DataLoader(
-            dataset,
-            batch_size=batch_size,  # 20,
-            # drop_last=True,
-            # sampler=sampler,
-            shuffle=not deterministic,
-            num_workers=4,
-        )
-
+    # if split != 'test':
+    #     sampler = DistributedSampler(dataset)
+    #     data_loader = DataLoader(
+    #         dataset,
+    #         batch_size=batch_size,  # 20,
+    #         # drop_last=True,
+    #         sampler=sampler,
+    #         # shuffle=not deterministic,
+    #         num_workers=4,
+    #     )
+    # else:
+    # else:
+    data_loader = DataLoader(
+        dataset,
+        batch_size=batch_size,  # 20,
+        # drop_last=True,
+        # sampler=sampler,
+        # num_workers=2,
+        shuffle=not deterministic,
+        num_workers=8,
+    )
     if loop:
         return infinite_loader(data_loader)
     else:
@@ -127,7 +129,7 @@ def helper_tokenize(sentence_lst, vocab_dict, seq_len):
     tokenized_datasets = tokenized_datasets.map(
         merge_and_mask,
         batched=True,
-        num_proc=1,
+        num_proc=4,
         desc=f"merge and mask",
     )
     
@@ -155,12 +157,12 @@ def helper_tokenize(sentence_lst, vocab_dict, seq_len):
     return raw_datasets
 
 
-def get_corpus(data_args, seq_len, split='train', loaded_vocab=None):
+def get_corpus(data_args, seq_len, split='train',demo_text="", loaded_vocab=None):
 
     print('#'*30, '\nLoading dataset {} from {}...'.format(data_args.dataset, data_args.data_dir))
 
     sentence_lst = {'src':[], 'trg': []}
-    
+    # print(data_args.data_dir)
     if split == 'train':
         print('### Loading form the TRAIN set...')
         path = f'{data_args.data_dir}/train.jsonl'
@@ -170,15 +172,20 @@ def get_corpus(data_args, seq_len, split='train', loaded_vocab=None):
     elif split == 'test':
         print('### Loading form the TEST set...')
         path = f'{data_args.data_dir}/test.jsonl'
+    elif split == "demo":
+        path = ""
     else:
         assert False, "invalid split for dataset"
 
-    with open(path, 'r') as f_reader:
-        for row in f_reader:
-            content = json.loads(row)
-            sentence_lst['src'].append(content['src'].strip())
-            sentence_lst['trg'].append(content['trg'].strip())
-
+    if (len(path) > 0):
+        with open(path, 'r') as f_reader:
+            for row in f_reader:
+                content = json.loads(row)
+                sentence_lst['src'].append(content['src'].strip())
+                sentence_lst['trg'].append(content['trg'].strip())
+    else:
+        sentence_lst['src'].append(demo_text.strip())
+        sentence_lst['trg'].append(demo_text.strip())
     print('### Data samples...\n', sentence_lst['src'][:2], sentence_lst['trg'][:2])
         
     # get tokenizer.
@@ -192,7 +199,9 @@ class TextDataset(Dataset):
     def __init__(self, text_datasets, data_args, model_emb=None):
         super().__init__()
         self.text_datasets = text_datasets
+        # print(text_datasets.keys())
         self.length = len(self.text_datasets['train'])
+        # print(self.length)
         self.data_args = data_args
         self.model_emb = model_emb
 
@@ -200,14 +209,11 @@ class TextDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
+        idx = int(idx)
         with jt.no_grad():
-
             input_ids = self.text_datasets['train'][idx]['input_ids']
-            hidden_state = self.model_emb(jt.Var(input_ids))
-
-            # obtain the input vectors, only used when word embedding is fixed (not trained end-to-end)
-            arr = np.array(hidden_state, dtype=np.float32)
-
+            hidden_state = self.model_emb(jt.Var(input_ids).cpu())
+            arr = hidden_state.cpu().numpy()
             out_kwargs = {}
             out_kwargs['input_ids'] = np.array(self.text_datasets['train'][idx]['input_ids'])
             out_kwargs['input_mask'] = np.array(self.text_datasets['train'][idx]['input_mask'])
@@ -215,8 +221,8 @@ class TextDataset(Dataset):
             return arr, out_kwargs
 
 def _collate_batch_helper(examples, pad_token_id, max_length, return_mask=False):
-    result = jt.full([len(examples), max_length], pad_token_id, dtype=jt.int64).tolist()
-    mask_ = jt.full([len(examples), max_length], pad_token_id, dtype=jt.int64).tolist()
+    result = jt.full([len(examples), max_length], pad_token_id, dtype=np.int32).tolist()
+    mask_ = jt.full([len(examples), max_length], pad_token_id, dtype=np.int32).tolist()
     for i, example in enumerate(examples):
         curr_len = min(len(example), max_length)
         result[i][:curr_len] = example[:curr_len]

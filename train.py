@@ -20,8 +20,7 @@ from transformers import set_seed
 import wandb
 import jittor as jt
 
-### custom your wandb setting here ###
-# os.environ["WANDB_API_KEY"] = ""
+jt.flags.use_cuda = 1 if jt.has_cuda else 0
 
 def create_argparser():
     defaults = dict()
@@ -33,7 +32,6 @@ def create_argparser():
 def main():
     args = create_argparser().parse_args()
     set_seed(args.seed) 
-    dist_util.setup_dist()
     logger.configure()
     logger.log("### Creating data loader...")
 
@@ -48,7 +46,7 @@ def main():
         model_emb=model_weight # use model's weights as init
     )
     next(data)
-
+    print("BATCH_SIZE: ",args.batch_size)
     data_valid = load_data_text(
         batch_size=args.batch_size,
         seq_len=args.seq_len,
@@ -87,7 +85,8 @@ def main():
         wandb.config.update(args.__dict__, allow_val_change=True)
 
     logger.log("### Training...")
-
+    # args.resume_checkpoint = "/home/aiuser/Jittor-DiffuSeq/diffusion_models/diffuseq_question_h128_lr0.0001_t2000_sqrt_lossaware_seed102_Q_T_real20241224-02:04:42/ema_0.9999_038000.pt"
+    args.resume_checkpoint = "/home/aiuser/Jittor-DiffuSeq/diffusion_models/diffuseq_dialogue_h128_lr0.0001_t2000_sqrt_lossaware_seed102_dialogue20241225-18:01:56/ema_0_9999_050000.pt"
     TrainLoop(
         model=model,
         diffusion=diffusion,

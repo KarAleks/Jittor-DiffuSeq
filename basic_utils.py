@@ -3,11 +3,14 @@ import jittor as jt
 from jittor import nn
 import json, os
 import time
+import numpy as np
 
 from diffuseq import gaussian_diffusion as gd
 from diffuseq.gaussian_diffusion import SpacedDiffusion, space_timesteps
 from diffuseq.transformer_model import TransformerNetModel
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
+
+jt.flags.use_cuda = 1
 
 class myTokenizer():
     """
@@ -55,12 +58,12 @@ class myTokenizer():
         
     def decode_token(self, seq):
         if isinstance(self.tokenizer, dict):
-            seq = seq.squeeze(-1).tolist()
+            seq = seq.view(-1).tolist(np.int32).tolist()
             while len(seq)>0 and seq[-1] == self.pad_token_id:
                 seq.pop()
             tokens = " ".join([self.rev_tokenizer[x] for x in seq]).replace('__ ', '').replace('@@ ', '')
         elif isinstance(self.tokenizer, PreTrainedTokenizerFast):
-            seq = seq.squeeze(-1).tolist()
+            seq = seq.view(-1).to(np.int32).tolist()
             while len(seq)>0 and seq[-1] == self.pad_token_id:
                 seq.pop()
             tokens = self.tokenizer.decode(seq)
@@ -71,25 +74,28 @@ class myTokenizer():
 
 def load_model_emb(args, tokenizer):
     ### random emb or pre-defined embedding like glove embedding. You can custome your own init here.
-    model = nn.Embedding(tokenizer.vocab_size, args.hidden_dim)
-    path_save = '{}/random_emb.torch'.format(args.checkpoint_path)
+    print(tokenizer.vocab_size)
+    model = nn.Embedding(tokenizer.vocab_size, args.hidden_dim,dtype=np.float32)
+    path_save = '{}/random_emb.pth'.format(args.checkpoint_path)
     path_save_ind = path_save + ".done"
-    if int(os.environ['LOCAL_RANK']) == 0:
-        if os.path.exists(path_save):
-            print('reload the random embeddings', model)
-            model.load(path_save)
-        else:
-            print('initializing the random embeddings', model)
-            nn.init.gauss_(model.weight, mean=0, std=0.02)
-            model.save(path_save)
-            os.sync()
-            with open(path_save_ind, "x") as _:
-                pass
-    else:
-        while not os.path.exists(path_save_ind):
-            time.sleep(1)
+    # if int(os.environ['LOCAL_RANK']) == 0:
+    if os.path.exists(path_save):
         print('reload the random embeddings', model)
-        model.load(path_save)
+        model.load_state_dict(jt.load(path_save)) 
+        jt.save(model.state_dict(),path_save) # There is no reasonalble thing that can explain this. On cuda doe snot work without this
+        
+    else:
+        print('initializing the random embeddings', model)
+        nn.init.gauss_(model.weight, mean=0, std=0.02)
+        jt.save(model.state_dict(),path_save)
+        os.sync()
+        with open(path_save_ind, "x") as _:
+            pass
+    # else:
+    #     while not os.path.exists(path_save_ind):
+    #         time.sleep(1)
+    #     print('reload the random embeddings', model)
+    #     model.load(path_save)
 
     return model, tokenizer
 
@@ -125,6 +131,9 @@ def create_model_and_diffusion(
     notes,
     **kwargs,
 ):
+
+
+    print("use_pretrain: ",use_plm_init)
     model = TransformerNetModel(
         input_dims=hidden_dim,
         output_dims=(hidden_dim if not learn_sigma else hidden_dim*2),

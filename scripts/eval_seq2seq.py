@@ -1,17 +1,15 @@
 import os, sys, glob, json
 import numpy as np
 import argparse
-# import torch
-import jittor as jt
+import torch
 
 from torchmetrics.text.rouge import ROUGEScore
 rougeScore = ROUGEScore()
 from bert_score import score
-# from rouge_score import rouge_scorer
 
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import nltk
-
+import tqdm
 def get_bleu(recover, reference):
     return sentence_bleu([reference.split()], recover.split(), smoothing_function=SmoothingFunction().method4,)
 
@@ -79,6 +77,7 @@ if __name__ == '__main__':
     files = sorted(glob.glob(f"{args.folder}/*json"))
     sample_num = 0
     with open(files[0], 'r') as f:
+        # print("Debugging1")
         for row in f:
             sample_num += 1
 
@@ -86,6 +85,7 @@ if __name__ == '__main__':
     referenceDict = {}
     sourceDict = {}
     for i in range(sample_num):
+        # print("Debugging2")
         sentenceDict[i] = []
         referenceDict[i] = []
         sourceDict[i] = []
@@ -94,6 +94,7 @@ if __name__ == '__main__':
     selfBleu = []
 
     for path in files:
+        # print("Debugging3")
         print(path)
         sources = []
         references = []
@@ -104,9 +105,11 @@ if __name__ == '__main__':
         dist1 = []
 
         with open(path, 'r') as f:
+            # print("Debugging4")
             cnt = 0
-            for row in f:
-
+            lines = list(f.readlines())
+            for row in tqdm.tqdm(lines):
+                # print(cnt)
                 source = json.loads(row)['source'].strip()
                 reference = json.loads(row)['reference'].strip()
                 recover = json.loads(row)['recover'].strip()
@@ -119,24 +122,20 @@ if __name__ == '__main__':
                 recovers.append(recover)
                 avg_len.append(len(recover.split(' ')))
                 bleu.append(get_bleu(recover, reference))
-
-                scorer = rougeScore.RougeScorer(['rougeL'], use_stemmer=True)
-                score = scorer.score(recover, reference)
-                rougel.append(score['rougeL'].fmeasure)
-                #rougel.append(rougeScore(recover, reference)['rougeL_fmeasure'].tolist())
+                rougel.append(rougeScore(recover, reference)['rougeL_fmeasure'].tolist())
                 dist1.append(distinct_n_gram([recover], 1))
 
                 sentenceDict[cnt].append(recover)
                 referenceDict[cnt].append(reference)
                 sourceDict[cnt].append(source)
                 cnt += 1
-                
+            print("Debugging6")  
         P, R, F1 = score(recovers, references, model_type='microsoft/deberta-xlarge-mnli', lang='en', verbose=True)
 
         print('*'*30)
         print('avg BLEU score', np.mean(bleu))
         print('avg ROUGE-L score', np.mean(rougel))
-        print('avg berscore', np.mean(F1))
+        print('avg berscore', torch.mean(F1))
         print('avg dist1 score', np.mean(dist1))
         print('avg len', np.mean(avg_len))
 
@@ -178,9 +177,7 @@ if __name__ == '__main__':
 
             for (source, reference, recover) in zip(sources, references, recovers):
                 bleu.append(get_bleu(recover, reference))
-                score = scorer.score(recover, reference)
-                rougel.append(score['rouge1'].fmeasure)
-                #rougel.append(rougeScore(recover, reference)['rougeL_fmeasure'].tolist())
+                rougel.append(rougeScore(recover, reference)['rougeL_fmeasure'].tolist())
                 avg_len.append(len(recover.split(' ')))
                 dist1.append(distinct_n_gram([recover], 1))
 
@@ -191,5 +188,5 @@ if __name__ == '__main__':
             print('*'*30)
             print('avg BLEU score', np.mean(bleu))
             print('avg ROUGE-l score', np.mean(rougel))
-            print('avg berscore', np.mean(F1))
+            print('avg berscore', torch.mean(F1))
             print('avg dist1 score', np.mean(dist1))

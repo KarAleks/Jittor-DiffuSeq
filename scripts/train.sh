@@ -1,15 +1,16 @@
 python3 run_train.py \
 --diff_steps 2000 \
 --lr 0.0001 \
---learning_steps 50000 \
---save_interval 10000 \
+--learning_steps 300000 \
+--save_interval  1000 \
 --seed 102 \
 --noise_schedule sqrt \
 --hidden_dim 128 \
---bsz 2048 \
+--bsz 128 \
+--microbatch 128 \
 --dataset dialogue \
---data_dir  "/home/aiuser/DiffuSeq/datasets/CommonsenseConversation" \
+--data_dir  /home/aiuser/Jittor-DiffuSeq/datasets/CommonsenseConversation \
 --vocab bert \
 --seq_len 128 \
 --schedule_sampler lossaware \
---notes test-qqp
+--notes dialogue

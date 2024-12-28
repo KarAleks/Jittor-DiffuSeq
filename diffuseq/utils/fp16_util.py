@@ -32,6 +32,7 @@ def make_master_params(model_params):
     """
     master_params = [param.detach().float32() for param in model_params]
     for param in master_params:
+        # print("param type: ",param.dtype)
         param.requires_grad = True
     return master_params
 
@@ -73,9 +74,14 @@ def unflatten_master_params(model_params, master_params):
         for i, param in enumerate(model_params)
     ]
 
-def zero_grad(model_params):
+def zero_grad(model_params,optim):
     for param in model_params:
         # Taken from https://pytorch.org/docs/stable/_modules/torch/optim/optimizer.html#Optimizer.add_param_group
-        if param.grad is not None:
-            #param.grad.detach_()
-            param.grad.zero_()
+        try:
+            grad = param.opt_grad(optim)
+            if grad is not None:
+                #param.grad.detach_()
+                grad.zero_()
+        except:
+            pass
+        # ecx

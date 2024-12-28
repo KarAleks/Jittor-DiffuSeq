@@ -366,9 +366,10 @@ class Logger(object):
             )
             if self.comm.rank != 0:
                 d["dummy"] = 1  # so we don't get a warning about empty dict
-        # LISA
+       # LISA
         out = d.copy()  # Return the dict for unit testing purposes
-        if int(os.environ['LOCAL_RANK']) == 0:
+        # print("Bozi txa: ",d)
+        if int(os.environ.get('LOCAL_RANK', 0)) == 0:
             wandb.log({**d})
             for fmt in self.output_formats:
                 if isinstance(fmt, KVWriter):
@@ -376,6 +377,7 @@ class Logger(object):
         self.name2val.clear()
         self.name2cnt.clear()
         return out
+
 
     def log(self, *args, level=INFO):
         if self.level <= level:

@@ -29,7 +29,7 @@ from diffuseq.step_sample import LossAwareSampler, UniformSampler
 # We found that the lg_loss_scale quickly climbed to
 # 20-21 within the first ~1K steps of training.
 INITIAL_LOG_LOSS_SCALE = 20.0
-
+jt.flags.use_cuda = 1
 
 class TrainLoop:
     def __init__(
@@ -53,7 +53,7 @@ class TrainLoop:
         checkpoint_path='',
         gradient_clipping=-1.,
         eval_data=None,
-        eval_interval=-1,
+        eval_interval=10,
     ):
         self.model = model
         self.diffusion = diffusion
@@ -81,8 +81,8 @@ class TrainLoop:
         self.use_ddp = False
         self.step = 0
         self.resume_step = 0
-
-        self.model_params = list(self.model.parameters())
+        self.ddp_model = self.model
+        self.model_params = list(self.ddp_model.parameters())
         self.master_params = self.model_params
         self.lg_loss_scale = INITIAL_LOG_LOSS_SCALE
         self.sync_cuda = jt.has_cuda
@@ -95,12 +95,9 @@ class TrainLoop:
 
         self.opt = AdamW(self.master_params, lr=self.lr, weight_decay=self.weight_decay)
         if self.resume_step:
-            # self._load_optimizer_state()
             frac_done = (self.step + self.resume_step) / self.learning_steps
             lr = self.lr * (1 - frac_done)
             self.opt = AdamW(self.master_params, lr=lr, weight_decay=self.weight_decay)
-            # Model was resumed, either due to a restart or a checkpoint
-            # being specified at the command line.
             self.ema_params = [
                 self._load_ema_parameters(rate) for rate in self.ema_rate
             ]
@@ -110,21 +107,24 @@ class TrainLoop:
             ]
 
         if jt.has_cuda: # DEBUG **
-            self.model.to('cuda')
+            self.model.cuda()
+            
         else:
             self.ddp_model = self.model
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
-
-        if resume_checkpoint[-3:] == '.pt':
-            self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
-            logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-            self.model.load_state_dict(
-                jt.load(
-                    actual_model_path(resume_checkpoint), map_location=self.device
+       
+        if (os.path.exists(resume_checkpoint)):
+            print("Resumed")
+            if resume_checkpoint[-3:] == '.pt':
+                self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
+                logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
+                self.model.load_state_dict(
+                    jt.load(
+                        actual_model_path(resume_checkpoint)
+                    )
                 )
-            )
 
     def _load_ema_parameters(self, rate):
         ema_params = copy.deepcopy(self.master_params)
@@ -134,7 +134,7 @@ class TrainLoop:
         if ema_checkpoint:
             logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
             state_dict = jt.load(
-                actual_model_path(ema_checkpoint), map_location=self.device
+                actual_model_path(ema_checkpoint)
             )
             ema_params = self._state_dict_to_master_params(state_dict)
         return ema_params
@@ -144,7 +144,7 @@ class TrainLoop:
         if bf.exists(main_checkpoint):
             logger.log(f"loading optimizer state from checkpoint: {main_checkpoint}")
             state_dict = jt.load(
-                actual_model_path(main_checkpoint), map_location=self.device
+                actual_model_path(main_checkpoint)
             )
             self.opt.load_state_dict(state_dict)
 
@@ -161,6 +161,7 @@ class TrainLoop:
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
+                # pass
             if self.eval_data is not None and self.step % self.eval_interval == 0:
                 batch_eval, cond_eval = next(self.eval_data)
                 self.forward_only(batch_eval, cond_eval)
@@ -186,11 +187,14 @@ class TrainLoop:
 
     def forward_only(self, batch, cond):
         with jt.no_grad():
-            zero_grad(self.model_params)
+            # self.ddp_model.zero_grad()
+            # zero_grad(self.model_params,self.opt)
+            self.opt.zero_grad()
+            print("MicroBatchSize: ",self.microbatch)
             for i in range(0, batch.shape[0], self.microbatch):
-                micro = batch[i: i + self.microbatch].to(self.device)
+                micro = batch[i: i + self.microbatch]
                 micro_cond = {
-                    k: v[i: i + self.microbatch].to(self.device)
+                    k: v[i: i + self.microbatch]
                     for k, v in cond.items()
                 }
                 last_batch = (i + self.microbatch) >= batch.shape[0]
@@ -211,16 +215,18 @@ class TrainLoop:
                         losses = compute_losses()
 
                 log_loss_dict(
-                    self.diffusion, t, {f"eval_{k}": v * weights for k, v in losses.items()}
+                    self.diffusion, t, {f"eval_{k}": v*weights for k, v in losses.items()}
                 )
 
 
     def forward_backward(self, batch, cond):
-        zero_grad(self.model_params)
+        # zero_grad(self.model_params,self.opt)
+        self.opt.zero_grad()
+        # self.ddp_model.zero_grad()
         for i in range(0, batch.shape[0], self.microbatch):
-            micro = batch[i : i + self.microbatch].to(self.device)
+            micro = batch[i : i + self.microbatch]
             micro_cond = {
-                k: v[i : i + self.microbatch].to(self.device)
+                k: v[i : i + self.microbatch]
                 for k, v in cond.items()
             }
             last_batch = (i + self.microbatch) >= batch.shape[0]
@@ -240,20 +246,24 @@ class TrainLoop:
                 with self.ddp_model.no_sync():
                     losses = compute_losses()
 
-            # if isinstance(self.schedule_sampler, LossAwareSampler):
-            #     self.schedule_sampler.update_with_local_losses(
-            #         t, losses["loss"].detach()
-            #     )
-
+            if isinstance(self.schedule_sampler, LossAwareSampler):
+                self.schedule_sampler.update_with_local_losses(
+                    t, losses["loss"]
+                )
+            # print(weights.dtype)
             loss = (losses["loss"] * weights).mean()
+            # for k, v in losses.items():
+            #     print(f"Value: {k}")
+            #     print(f"Value: ",v)
             log_loss_dict(
-                self.diffusion, t, {k: v * weights for k, v in losses.items()}
+                self.diffusion, t, {k: v*weights for k, v in losses.items()}
             )
             if self.use_fp16:
                 loss_scale = 2 ** self.lg_loss_scale
-                (loss * loss_scale).backward()
+                self.opt.backward(loss * loss_scale)
+                # (loss * loss_scale).backward()
             else:
-                loss.backward()
+                self.opt.backward(loss)
 
     def optimize_fp16(self):
         if any(not jt.isfinite(p.grad).all() for p in self.model_params):
@@ -288,15 +298,24 @@ class TrainLoop:
                 self.model.parameters(), #amp.master_params(self.opt) if self.use_apex else
                 max_grad_norm,
             )
-
     def optimize_normal(self):
         if self.gradient_clipping > 0:
             self.grad_clip()
+        self.master_params = list(self.ddp_model.parameters())
         self._log_grad_norm()
         self._anneal_lr()
         self.opt.step()
+        # Update ema
+        self.master_params = list(self.ddp_model.parameters())
+        new_emas = []
         for rate, params in zip(self.ema_rate, self.ema_params):
-            update_ema(params, self.master_params, rate=rate)
+            updated = []
+            for targ, src in zip(params, self.master_params):
+                updated.append(targ*rate + src*(1-rate))
+            new_emas.append(updated)
+        self.ema_params = new_emas
+        
+
 
     def _log_grad_norm(self):
         sqsum = 0.0
@@ -305,8 +324,9 @@ class TrainLoop:
             # print(cnt, p) ## DEBUG
             # print(cnt, p.grad)
             # cnt += 1
-            if p.grad != None:
-                sqsum += (p.grad ** 2).sum().item()
+            grad = p.opt_grad(self.opt)
+            if grad is not None:
+                sqsum += (grad ** 2).sum().item()
         logger.logkv_mean("grad_norm", np.sqrt(sqsum))
 
     def _anneal_lr(self):
@@ -319,7 +339,7 @@ class TrainLoop:
 
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)
-        logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
+        logger.logkv("samples", (self.step + self.resume_step + 1) * self.batch_size)
         if self.use_fp16:
             logger.logkv("lg_loss_scale", self.lg_loss_scale)
 
@@ -336,7 +356,7 @@ class TrainLoop:
             # with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
             #     th.save(state_dict, f)
             with bf.BlobFile(bf.join(self.checkpoint_path, filename), "wb") as f: # DEBUG **
-                jt.save(state_dict, f) # save locally
+                jt.save(state_dict, f.name) # save locally
                     # pass # save empty
 
         # save_checkpoint(0, self.master_params)
@@ -354,6 +374,7 @@ class TrainLoop:
         for i, (name, _value) in enumerate(self.model.named_parameters()):
             assert name in state_dict
             state_dict[name] = master_params[i]
+        # print(state_dict)
         return state_dict
 
     def _state_dict_to_master_params(self, state_dict):
@@ -401,8 +422,9 @@ def log_loss_dict(diffusion, ts, losses):
         # Log the quantiles (four quartiles, in particular).
         for sub_t, sub_loss in zip(ts.cpu().numpy(), values.detach().cpu().numpy()):
             quartile = int(4 * sub_t / diffusion.num_timesteps)
+            # print(f"{key}_q{quartile}", sub_loss)
             logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
-
+    # print("end")/
 
 def actual_model_path(model_path):
     return model_path

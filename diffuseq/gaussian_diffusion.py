@@ -8,10 +8,20 @@ Docstrings have been added, as well as DDIM sampling and a new collection of bet
 import math
 import numpy as np
 import jittor as jt 
+import jittor.nn as nn
 import sys
 sys.path.append('.')
 from .utils.nn import mean_flat
-
+nn.CrossEntropyLoss
+class MyCrossEntropyLoss(nn.Module):
+    def __init__(self, weight=None, ignore_index=None,reduction="mean"):
+        self.weight = weight
+        self.ignore_index = ignore_index
+        self.reduction = reduction
+        
+    def execute(self, output, target):
+        return nn.cross_entropy_loss(output, target, self.weight, self.ignore_index,reduction=self.reduction)
+    
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     """
     Get a pre-defined beta schedule for the given name.
@@ -246,11 +256,12 @@ class GaussianDiffusion:
             * noise
         )
 
-        if mask == None:
+        if mask is None:
             return x_t
         else:
-            mask = jt.broadcast_to(mask.unsqueeze(dim=-1), x_start.shape)
-            return jt.where(mask==0, x_start, x_t)
+            mask = mask.unsqueeze(dim=-1).numpy()
+            mask = jt.broadcast(mask,x_start.shape)
+            return jt.where(mask==0,x_start,x_t)
 
     def q_posterior_mean_variance(self, x_start, x_t, t):
         """
@@ -300,11 +311,12 @@ class GaussianDiffusion:
         """
         if model_kwargs is None:
             model_kwargs = {}
-
+        # print("PPP1")
         B, C = x.size(0), x.size(-1)
         assert t.shape == (B,)
-        # print(x.shape)
+        # print(x)
         model_output = model(x, self._scale_timesteps(t), **model_kwargs)
+        # print("PPP2")
         
         # for fixedlarge, we set the initial (log-)variance like so
         # to get a better decoder log likelihood.
@@ -372,27 +384,33 @@ class GaussianDiffusion:
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
+        # print(top_p)
         if top_p is not None and top_p > 0:
             # print('top_p sampling')
             noise = jt.randn_like(x)
             replace_mask = jt.abs(noise) > top_p
+            
             while replace_mask.any():
                 noise[replace_mask] = jt.randn_like(noise[replace_mask])
                 replace_mask = jt.abs(noise) > top_p
+            
             assert (jt.abs(noise) <= top_p).all()
 
         else:
+            # print("PO")
             noise = jt.randn_like(x)
 
+       
         nonzero_mask = (
             (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
         )  # no noise when t == 0
+        
         sample = out["mean"] + nonzero_mask * jt.exp(0.5 * out["log_variance"]) * noise
-        if mask == None:
+        if mask is None:
             pass
         else:
             sample = jt.where(mask==0, x_start, sample)
-
+        # print("PB")
         return {
             "sample": sample, 
             "pred_xstart": out["pred_xstart"],
@@ -481,22 +499,23 @@ class GaussianDiffusion:
         Returns a generator over dicts, where each dict is the return value of
         p_sample().
         """
-        if device is None:
-            device = next(model.parameters()).device
         assert isinstance(shape, (tuple, list))
         if noise is not None: # custom your the start point of x_0
             sample_x = noise
         else:
-            sample_x = jt.randn(*shape, device=device)
+            sample_x = jt.randn(*shape)
         indices = list(range(self.num_timesteps))[::-1]
 
+        # print(progress)
+        progress = True
         if progress:
             # Lazy import so that we don't depend on tqdm.
             from tqdm.auto import tqdm
             indices = tqdm(indices)
 
         for i in indices: # from T to 0
-            t = jt.tensor([i] * shape[0], device=device)
+            # print(i)
+            t = jt.array([i] * shape[0])
             if not clamp_first:
                 if i > clamp_step:
                     denoised_fn_cur = None
@@ -507,6 +526,7 @@ class GaussianDiffusion:
                     denoised_fn_cur = denoised_fn
                 else:
                     denoised_fn_cur = None
+            # print("sample 1")
             with jt.no_grad():
                 out = self.p_sample(
                     model,
@@ -521,7 +541,7 @@ class GaussianDiffusion:
                 )
                 yield out
                 sample_x = out["sample"]
-
+            # print("sample 2")
 
     def _get_x_start(self, x_start_mean, std):
         '''
@@ -545,16 +565,19 @@ class GaussianDiffusion:
         reshaped_x_t = x_t
         logits = get_logits(reshaped_x_t)  # bsz, seqlen, vocab
         # print(logits.shape)
-        loss_fct = jt.nn.CrossEntropyLoss(reduction='none')
-        decoder_nll = loss_fct(logits.view(-1, logits.size(-1)), input_ids.view(-1)).view(input_ids.shape)
-        if mask != None:
+        loss_fct = MyCrossEntropyLoss(reduction="none")
+        #print(logits.shape)
+        decoder_nll = loss_fct(logits.view(-1, logits.size(-1)), input_ids.view(-1))
+        #print(decoder_nll.shape)
+        decoder_nll = decoder_nll.view(input_ids.shape)
+        if mask is not None:
             decoder_nll *= mask
         # print(decoder_nll.shape)
-        if mask != None:
+        if mask is not None:
             decoder_nll = decoder_nll.sum(dim=-1)/mask.sum(dim=-1)
         else:
             decoder_nll = decoder_nll.mean(dim=-1)
-
+        # print("Decoder: ",decoder_nll)
         return decoder_nll
 
     def _x0_helper(self, model_output, x, t):
@@ -587,14 +610,17 @@ class GaussianDiffusion:
         :return: a dict with the key "loss" containing a tensor of shape [N].
                  Some mean or variance settings may also have other keys.
         """
+        device = "cuda" if jt.has_cuda else "cpu"
+        # device = "cuda" if model.is_cuda() else "cpu"
         x_start_fix = x_start # save the orignal x_0
         assert 'input_ids' in model_kwargs
-        input_ids_x = model_kwargs.pop('input_ids').to(t.device)
-        input_ids_mask = model_kwargs.pop('input_mask').to(t.device)
-        x_start_mean = model.model.module.get_embeds(input_ids_x)
-        
+        input_ids_x = model_kwargs.pop('input_ids')
+        input_ids_mask = model_kwargs.pop('input_mask')
+        # print("inputs ids: ",input_ids_x.shape)
+        x_start_mean = model.model.get_embeds(input_ids_x)
+        # print("x_start_mean: ",x_start_mean.shape)
         std = _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod,
-                                   jt.tensor([0]).to(x_start_mean.device),
+                                   jt.array([0]),
                                    x_start_mean.shape)
         # print(std.shape, )
         # x_start_log_var = 2 * th.log(std)
@@ -605,7 +631,7 @@ class GaussianDiffusion:
 
         x_t = self.q_sample(x_start, t, noise=noise, mask=input_ids_mask) # reparametrization trick.
 
-        get_logits = model.model.module.get_logits
+        get_logits = model.model.get_logits
 
         terms = {}
 
@@ -617,14 +643,22 @@ class GaussianDiffusion:
         model_out_x_start = self._x0_helper(model_output, x_t, t)['pred_xstart'] # predicted_xstart = model_output
         t0_mask = (t == 0)
         t0_loss = mean_flat((x_start_mean - model_out_x_start) ** 2)
+        # print("JT: ",jt.where(t0_mask, t0_loss, terms["mse"]))
+        # import torch
+        # print("Torch: ",torch.where(torch.tensor(t0_mask.numpy()), torch.tensor(t0_loss.numpy()), torch.tensor(terms["mse"].numpy())))
         terms["mse"] = jt.where(t0_mask, t0_loss, terms["mse"])
 
         # tT_mask = (t == self.num_timesteps - 1)
-        out_mean, _, _ = self.q_mean_variance(x_start, jt.LongTensor([self.num_timesteps - 1]).to(x_start.device))
+        out_mean, _, _ = self.q_mean_variance(x_start, jt.array([self.num_timesteps - 1],dtype=np.int32))
         tT_loss =  mean_flat(out_mean ** 2)
 
         decoder_nll = self._token_discrete_loss(x_start, get_logits, input_ids_x) # embedding regularization
+        # print("model out: ",model_out_x_start)
+        # print("usual: ",x_start)
+        # print("Mask: ", input_ids_mask)
+        input_ids_mask = input_ids_mask.cast(jt.int32)
         terms["nll"] = self._token_discrete_loss(model_out_x_start, get_logits, input_ids_x, mask=input_ids_mask, truncate=True, t=t) # x_0->model_out_x_start
+        # print()
         # assert (model.lm_head.weight == model.word_embedding.weight).all()
 
         terms["loss"] = terms["mse"] + decoder_nll + tT_loss
@@ -679,7 +713,7 @@ class GaussianDiffusion:
         # print(sigma.mean())
         sample = mean_pred + nonzero_mask * sigma * noise
         if langevin_fn:
-            print(t.shape)
+            #print(t.shape)
             sample=langevin_fn(sample, mean_pred, sigma, self.alphas_cumprod_prev[t[0]], t, x)
         
         if mask == None:
@@ -830,7 +864,8 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
                             dimension equal to the length of timesteps.
     :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
     """
-    res = jt.array(arr).to(device=timesteps.device)[timesteps].float()
+    device = "cuda" if jt.has_cuda else "cpu"
+    res = jt.array(arr)[timesteps].float()
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
@@ -951,7 +986,8 @@ class _WrappedModel:
 
     def __call__(self, x, ts, **kwargs):
         # print(ts)
-        map_tensor = jt.Var(self.timestep_map, device=ts.device, dtype=ts.dtype)
+        device = "cuda" if jt.has_cuda else "cpu"
+        map_tensor = jt.Var(self.timestep_map)
         new_ts = map_tensor[ts]
         # print(new_ts)
         if self.rescale_timesteps:

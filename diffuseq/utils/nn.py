@@ -10,7 +10,7 @@ def mean_flat(tensor:jt.Var):
     """
     Take the mean over all non-batch dimensions.
     """
-    return tensor.mean(dim=list(range(1, len(tensor.shape))))
+    return tensor.mean(dims=list(range(1, len(tensor.shape))))
 
 def timestep_embedding(timesteps, dim, max_period=10000):
     """
@@ -23,9 +23,10 @@ def timestep_embedding(timesteps, dim, max_period=10000):
     :return: an [N x dim] Tensor of positional embeddings.
     """
     half = dim // 2
+    device = "cuda" if jt.has_cuda else "cpu"
     freqs = jt.exp(
-        -math.log(max_period) * jt.arange(start=0, end=half, dtype=jt.float32) / half
-    ).to(device=timesteps.device)
+        -math.log(max_period) * jt.arange(start=0, end=half) / half
+    )
     args = timesteps[:, None].float() * freqs[None]
     embedding = jt.cat([jt.cos(args), jt.sin(args)], dim=-1)
     if dim % 2:
@@ -41,5 +42,13 @@ def update_ema(target_params, source_params, rate=0.99):
     :param source_params: the source parameter sequence.
     :param rate: the EMA rate (closer to 1 means slower).
     """
+    # import copy
+    new_target = []
     for targ, src in zip(target_params, source_params):
-        targ.detach().mul_(rate).add_(src, alpha=1 - rate)
+        # tar1 = copy.deepcopy(targ)
+        new_target.append(targ*rate+src*(1-rate))
+
+    return new_target
+        # targ.detach().update(targ.detach() * rate + src * (1 - rate))
+        # import jittor as jt
+        # print("Bozi txa bug:{}  {}".format(tar1.shape,jt.sum(tar1==targ)))

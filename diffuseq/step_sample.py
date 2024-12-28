@@ -56,9 +56,9 @@ class ScheduleSampler(ABC):
         w = self.weights()
         p = w / np.sum(w)
         indices_np = np.random.choice(len(p), size=(batch_size,), p=p)
-        indices = jt.from_numpy(indices_np).long().to(device)
+        indices = jt.array(indices_np)
         weights_np = 1 / (len(p) * p[indices_np])
-        weights = jt.from_numpy(weights_np).float().to(device)
+        weights = jt.array(weights_np,dtype=np.float32)
         return indices, weights
 
 
@@ -96,27 +96,30 @@ class LossAwareSampler(ScheduleSampler):
         :param local_ts: an integer Tensor of timesteps.
         :param local_losses: a 1D Tensor of losses.
         """
-        batch_sizes = [
-            th.tensor([0], dtype=th.int32, device=local_ts.device)
-            for _ in range(dist.get_world_size())
-        ]
-        dist.all_gather(
-            batch_sizes,
-            th.tensor([len(local_ts)], dtype=th.int32, device=local_ts.device),
-        )
+        # batch_sizes = [
+        #     th.tensor([0], dtype=th.int32, device=local_ts.device)
+        #     for _ in range(dist.get_world_size())
+        # ]
+        # dist.all_gather(
+        #     batch_sizes,
+        #     th.tensor([len(local_ts)], dtype=th.int32, device=local_ts.device),
+        # )
 
         # Pad all_gather batches to be the maximum batch size.
-        batch_sizes = [x.item() for x in batch_sizes]
-        max_bs = max(batch_sizes)
+        # batch_sizes = [x.item() for x in batch_sizes]
+        # max_bs = max(batch_sizes)
 
-        timestep_batches = [th.zeros(max_bs).to(local_ts) for bs in batch_sizes]
-        loss_batches = [th.zeros(max_bs).to(local_losses) for bs in batch_sizes]
-        dist.all_gather(timestep_batches, local_ts)
-        dist.all_gather(loss_batches, local_losses)
-        timesteps = [
-            x.item() for y, bs in zip(timestep_batches, batch_sizes) for x in y[:bs]
-        ]
-        losses = [x.item() for y, bs in zip(loss_batches, batch_sizes) for x in y[:bs]]
+        # timestep_batches = [th.zeros(max_bs).to(local_ts) for bs in batch_sizes]
+        # loss_batches = [th.zeros(max_bs).to(local_losses) for bs in batch_sizes]
+        # dist.all_gather(timestep_batches, local_ts)
+        # dist.all_gather(loss_batches, local_losses)
+        # timesteps = [
+        #     x.item() for y, bs in zip(timestep_batches, batch_sizes) for x in y[:bs]
+        # ]
+        # losses = [x.item() for y, bs in zip(loss_batches, batch_sizes) for x in y[:bs]]
+        timesteps = local_ts.tolist()
+        losses = local_losses.tolist()
+
         self.update_with_all_losses(timesteps, losses)
 
     @abstractmethod
@@ -143,13 +146,13 @@ class LossSecondMomentResampler(LossAwareSampler):
         self.history_per_term = history_per_term
         self.uniform_prob = uniform_prob
         self._loss_history = np.zeros(
-            [diffusion.num_timesteps, history_per_term], dtype=np.float64
+            [diffusion.num_timesteps, history_per_term], dtype=np.float32
         )
-        self._loss_counts = np.zeros([diffusion.num_timesteps], dtype=np.int64)
+        self._loss_counts = np.zeros([diffusion.num_timesteps], dtype=np.int32)
 
     def weights(self):
         if not self._warmed_up():
-            return np.ones([self.diffusion.num_timesteps], dtype=np.float64)
+            return np.ones([self.diffusion.num_timesteps], dtype=np.float32)
         weights = np.sqrt(np.mean(self._loss_history ** 2, axis=-1))
         weights /= np.sum(weights)
         weights *= 1 - self.uniform_prob
