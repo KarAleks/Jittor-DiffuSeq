@@ -11,8 +11,6 @@ Prepare datasets and put them under the `datasets` folder. Take `datasets/Common
 |-|-|-|-|-|
 | Open-domain Dialogue | Commonsense Conversation | 3382k | [CCM](https://github.com/thu-coai/ccm) | [download](https://drive.google.com/drive/folders/1exENF9Qc5UtXnHlNl9fvaxP3zyyH32qp?usp=sharing) |
 | Question Generation | Quasar-T | 117k | [OpenQA](https://github.com/thunlp/OpenQA) | [download](https://drive.google.com/drive/folders/122YK0IElSnGZbPMigXrduTVL1geB4wEW?usp=sharing) |
-<!-- | Text Simplification | Wiki-alignment | 677k | [Wiki-auto](https://github.com/chaojiang06/wiki-auto) | [download](https://drive.google.com/drive/folders/1BlWtD1UbnL_ef06Riq-gABlL0Zb50s-d?usp=sharing)|
-| Paraphrase | QQP | 144k|  [Kaggle](https://www.kaggle.com/c/quora-question-pairs) | [download](https://drive.google.com/drive/folders/1BHGCeHRZU7MQF3rsqXBIOCU2WIC3W6fb?usp=sharing) | -->
 
 ## Jittor-DiffuSeq Training
 ```bash
@@ -45,14 +43,17 @@ bash run_decode_solver.sh
 You need to specify the folder of decoded texts. This folder should contain the decoded files from the same model but sampling with different random seeds. 
 ```bash
 cd scripts
-python eval_seq2seq.py --folder ../{your-path-to-outputs} --mbr
+python3 eval_seq2seq.py --folder ../{your-path-to-outputs} --mbr
 ```
 Note: if you want to use this evaluation script for output files from other models, please make sure the same line from these output files refers to the same piece of data. Otherwise the diversity score could be incorrect.
+
+## Trained Models
+Trained models can be found [here](https://drive.google.com/drive/folders/1EnTEgiUUsSKE4NZHwZ5aPAaAZVqOZEAX?usp=sharing)
 
 ## Demo 
 For running demo chat, train model or use pretrained models, you just need to specify model path
 ```bash
-python3 demo.py ----model_path {path-to-your-model-path}
+python3 demo.py --model_path {path-to-your-model-path}
 ```
 ## Citation
 Please add the citation if DiffuSeq paper or code helps you.
@@ -74,4 +75,4 @@ Please add the citation if DiffuSeq paper or code helps you.
 
 ```
 ## Original Repo
-[DiffuSeq Repo](https://github.com/Shark-NLP/DiffuSeq/tree/main/diffuseq)
+[DiffuSeq Repo](https://github.com/Shark-NLP/DiffuSeq)
